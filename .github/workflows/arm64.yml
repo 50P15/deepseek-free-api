@@ -1,0 +1,85 @@
+name: Build ARM64 image from upstream
+
+# Construye la imagen linux/arm64 con el codigo mas reciente de Fly143/deepseek-free-api
+# y la publica en ghcr.io/50p15/deepseek-free-api. No hace falta sincronizar el fork.
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # cada dia 02:00 UTC, antes del Watchtower de las 06:00 (Madrid)
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Reconstruir aunque no haya commits nuevos'
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths: ['.github/workflows/arm64.yml']
+
+env:
+  UPSTREAM: Fly143/deepseek-free-api
+  IMAGE: ghcr.io/50p15/deepseek-free-api
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm   # runner ARM nativo (gratis en repos publicos)
+    permissions:
+      contents: read
+      packages: write
+      actions: write            # para el keepalive del cron
+    steps:
+      - name: Resolver ultimo commit del upstream
+        id: up
+        run: |
+          sha=$(git ls-remote "https://github.com/${UPSTREAM}.git" refs/heads/main | cut -f1)
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha::7}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comprobar si ya esta construida
+        id: chk
+        run: |
+          if [ "${{ inputs.force }}" != "true" ] && \
+             docker buildx imagetools inspect "${IMAGE}:sha-${{ steps.up.outputs.short }}" >/dev/null 2>&1; then
+            echo "Ya existe sha-${{ steps.up.outputs.short }}, nada que hacer"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout del upstream
+        if: steps.chk.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ steps.up.outputs.sha }}
+
+      - name: Build y push (arm64)
+        if: steps.chk.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:sha-${{ steps.up.outputs.short }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ env.UPSTREAM }}
+            org.opencontainers.image.revision=${{ steps.up.outputs.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Keepalive (evita que GitHub desactive el cron tras 60 dias sin actividad)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/arm64.yml/enable"
