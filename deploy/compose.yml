@@ -1,0 +1,24 @@
+# dsfree: proxy DeepSeek (imagen arm64 construida por .github/workflows/arm64.yml).
+# Uso: copiar este archivo a una carpeta junto a config.json y .secret_key (chmod 600) y
+#   docker compose up -d
+# La red de CLIProxyAPI es la red PRINCIPAL para que sobreviva
+# a reinicios y a las actualizaciones de Watchtower (recrea el contenedor).
+name: dsfree
+
+services:
+  dsfree:
+    image: ghcr.io/50p15/deepseek-free-api:latest
+    container_name: dsfree
+    restart: unless-stopped
+    command: ["python", "proxy.py"]
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./config.json:/app/config.json
+      - ./.secret_key:/app/.secret_key
+    networks:
+      - cliproxyapi_default
+
+networks:
+  cliproxyapi_default:
+    external: true
